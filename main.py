@@ -1,5 +1,6 @@
 import logging
 import re
+import os
 import time # Добавлен импорт для создания уникальных имен задач
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
@@ -12,7 +13,7 @@ from telegram.ext import (
 )
 
 # 🔑 Вставь сюда свой токен от BotFather
-TOKEN = 'TELEGRAM_BOT_TOKEN' # ЗАМЕНИ НА СВОЙ ТОКЕН
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") # ЗАМЕНИ НА СВОЙ ТОКЕН
 
 # --- Константы и словари ---
 # 🧹 Словарь стандартных задач
