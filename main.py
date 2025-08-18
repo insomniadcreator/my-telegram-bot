@@ -2,6 +2,7 @@ import logging
 import re
 import os
 import time # Добавлен импорт для создания уникальных имен задач
+import random # Добавлен импорт для случайного выбора фраз
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     ApplicationBuilder,
@@ -12,8 +13,9 @@ from telegram.ext import (
     filters,
 )
 
+
 # 🔑 Вставь сюда свой токен от BotFather
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") # ЗАМЕНИ НА СВОЙ ТОКЕН
+TOKEN = '' # ЗАМЕНИ НА СВОЙ ТОКЕН
 
 # --- Константы и словари ---
 # 🧹 Словарь стандартных задач
@@ -29,6 +31,30 @@ time_options = {
     '5m': 5,
     '10m': 10
 }
+
+# 😴 Список шуток для режима прокрастинации
+procrastination_phrases = [
+    "Окей, мусорный пакет подождет. Надеюсь, он не планирует эволюционировать и захватить кухню за это время!",
+    "Понимаю, диван сегодня особенно мягок. Даю тебе еще немного времени на подвиги!",
+    "Задача отложена. Помни, великие дела не делаются на голодный желудок... или на полный... в общем, потом.",
+    "Хорошо, откладываем. Но если растения завянут, мы скажем им, что это был твой творческий отпуск.",
+    "Принято! Эта задача теперь в официальном списке 'Сделаю завтра'. Список длинный, но ты справишься.",
+    "Без проблем! Даже Рим не один день строился. Правда, он и не посуду мыл.",
+    "Отдыхай, герой! Эта задача подождет твоего триумфального возвращения с кухни с чаем.",
+    "Есть! Задача переведена в режим ожидания. Она будет терпеливо ждать, пока ты спасаешь мир в интернете.",
+]
+
+# ✨ Список похвалы для выполненных задач
+completion_praises = [
+    "Отличная работа! Ты просто молодец!",
+    "Задача выполнена! Время для заслуженного отдыха.",
+    "Супер! Еще одно дело сделано. Ты unstoppable!",
+    "Так держать! Дом становится чище благодаря тебе.",
+    "Ты справился! Горжусь тобой.",
+    "Великолепно! Задача закрыта. Что дальше, покорение мира?",
+    "Есть! Минус одна задача. Ты — чемпион по продуктивности!",
+]
+
 
 # --- Словари для управления состоянием и данными ---
 user_states = {}
@@ -77,8 +103,7 @@ async def schedule_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 
     task_text = tasks.get(task_info, task_info)
     
-    # ИЗМЕНЕНО: Используем временную метку для гарантии уникальности имени задачи.
-    # Это предотвращает конфликты и ошибки при создании/удалении задач.
+    # Используем временную метку для гарантии уникальности имени задачи.
     job_name = f"reminder_{chat_id}_{user_id}_{int(time.time())}"
 
     context.job_queue.run_once(
@@ -92,11 +117,13 @@ async def schedule_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 
     confirmation_text = f"Окей! Напомню о задаче «{task_text}» через {minutes} мин."
 
+    # Проверяем, откуда пришел вызов - от кнопки или из текстового сообщения
     if update.callback_query:
         await update.callback_query.edit_message_text(confirmation_text)
     else:
         await context.bot.send_message(chat_id, confirmation_text, reply_markup=get_main_keyboard())
 
+    # Очищаем временные данные пользователя
     if user_id in user_task_data: del user_task_data[user_id]
     if user_id in user_states: del user_states[user_id]
 
@@ -106,21 +133,43 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Отправляет приветственное сообщение и показывает главную клавиатуру."""
     await update.message.reply_text(
         "Привет! Я твой ленивый помощник по дому.\n"
-        "Нажми 'Напомнить ⏰', чтобы выбрать, о чём тебе напомнить, "
-        "или 'Удалить ❌' для отмены.",
-        reply_markup=get_main_keyboard()
+        "Нажми 'Напомнить ⏰', чтобы выбрать, о чём тебе напомнить, или 'Удалить ❌' для отмены.\n\n"
+        "Когда придет напоминание, ты сможешь:\n"
+        "☕ *Отложить* — бот пошутит и предложит перенести задачу.\n"
+        "☑️ *Завершить* — бот похвалит тебя за выполненное дело.",
+        reply_markup=get_main_keyboard(),
+        parse_mode='Markdown'
     )
 
 async def remind_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает inline-кнопки для выбора задачи. Срабатывает по кнопке 'Напомнить ⏰' или слову 'напомни'."""
-    keyboard = [
-        [InlineKeyboardButton("Посуду", callback_data='task_dishes')],
-        [InlineKeyboardButton("Мусор", callback_data='task_trash')],
-        [InlineKeyboardButton("Растения", callback_data='task_plants')],
+    """ИЗМЕНЕНО: Показывает inline-кнопки для выбора задачи, включая последние 3 кастомные."""
+    
+    # НОВАЯ ЛОГИКА: Достаем последние задачи пользователя
+    recent_tasks = context.user_data.get('recent_custom_tasks', [])
+    
+    keyboard = []
+    
+    # Создаем кнопки для недавних задач
+    if recent_tasks:
+        for i, task_text in enumerate(recent_tasks):
+            # Обрезаем текст для кнопки, если он слишком длинный
+            button_text = f"🔄 {task_text}"
+            if len(button_text) > 40:
+                 button_text = button_text[:37] + "..."
+            # callback_data содержит индекс задачи в списке
+            keyboard.append([InlineKeyboardButton(button_text, callback_data=f"select_recent_{i}")])
+
+    # Добавляем стандартные кнопки
+    keyboard.extend([
+        [InlineKeyboardButton("🧼 Помыть посуду", callback_data='task_dishes')],
+        [InlineKeyboardButton("🗑️ Вынести мусор", callback_data='task_trash')],
+        [InlineKeyboardButton("🌿 Полить растения", callback_data='task_plants')],
         [InlineKeyboardButton("📝 Своя задача", callback_data='custom_task_start')]
-    ]
+    ])
+    
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Выбери задачу или создай свою:", reply_markup=reply_markup)
+    await update.message.reply_text("Выбери задачу, создай свою или используй недавнюю:", reply_markup=reply_markup)
+
 
 async def delete_list_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает список активных напоминаний для удаления. Срабатывает по кнопке 'Удалить ❌'."""
@@ -140,19 +189,41 @@ async def delete_list_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text("Какое напоминание удалить?", reply_markup=reply_markup)
 
 async def reminder_callback(context: ContextTypes.DEFAULT_TYPE):
-    """Отправляет сообщение с напоминанием."""
+    """Отправляет сообщение с напоминанием и кнопками 'Отложить' и 'Завершить'."""
     job = context.job
-    await context.bot.send_message(chat_id=job.chat_id, text=f"🔔 Напоминание: {job.data}!")
+    keyboard = [[
+        InlineKeyboardButton("☕ Отложить", callback_data="postpone"),
+        InlineKeyboardButton("Завершить ☑️", callback_data="complete")
+    ]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await context.bot.send_message(
+        chat_id=job.chat_id, 
+        text=f"🔔 Напоминание: {job.data}!",
+        reply_markup=reply_markup
+    )
     logger.info(f"Sent reminder to chat_id {job.chat_id}")
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обрабатывает нажатия на inline-кнопки (выбор задачи, времени, удаление)."""
+    """Обрабатывает нажатия на inline-кнопки."""
     query = update.callback_query
     await query.answer()
     data = query.data
     user_id = query.from_user.id
 
-    if data.startswith('task_'):
+    # НОВЫЙ БЛОК: Обработка кнопок с недавними задачами
+    if data.startswith('select_recent_'):
+        try:
+            index = int(data.split('_')[-1])
+            recent_tasks = context.user_data.get('recent_custom_tasks', [])
+            task_text = recent_tasks[index]
+            
+            user_task_data[user_id] = task_text
+            await query.edit_message_text("Через сколько напомнить?", reply_markup=get_time_keyboard())
+        except (IndexError, KeyError):
+            await query.edit_message_text("Не удалось найти эту задачу. Попробуй снова.", reply_markup=None)
+
+    elif data.startswith('task_'):
         task_key = data.split('_')[1]
         user_task_data[user_id] = task_key
         await query.edit_message_text("Через сколько напомнить?", reply_markup=get_time_keyboard())
@@ -176,6 +247,23 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=None
         )
 
+    elif data == 'postpone':
+        original_message_text = query.message.text
+        task_text = original_message_text.replace("🔔 Напоминание: ", "").replace("!", "")
+        user_task_data[user_id] = task_text
+        joke = random.choice(procrastination_phrases)
+        await query.edit_message_text(f"{original_message_text}\n\n_{joke}_", parse_mode='Markdown')
+        await context.bot.send_message(
+            chat_id=query.effective_chat.id,
+            text="Хорошо, на сколько отложим?",
+            reply_markup=get_time_keyboard()
+        )
+
+    elif data == 'complete':
+        original_message_text = query.message.text
+        praise = random.choice(completion_praises)
+        await query.edit_message_text(f"{original_message_text}\n\n✅ *{praise}*", parse_mode='Markdown')
+
     elif data.startswith('delete_confirm_'):
         job_name = data.replace('delete_confirm_', '', 1)
         jobs_to_remove = context.job_queue.get_jobs_by_name(job_name)
@@ -196,10 +284,27 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current_state = user_states.get(user_id)
 
     if current_state == AWAITING_CUSTOM_TASK:
-        user_task_data[user_id] = update.message.text
+        custom_task_text = update.message.text
+        user_task_data[user_id] = custom_task_text
+        
+        # НОВАЯ ЛОГИКА: Сохраняем кастомную задачу в историю
+        if 'recent_custom_tasks' not in context.user_data:
+            context.user_data['recent_custom_tasks'] = []
+        
+        recent_tasks = context.user_data['recent_custom_tasks']
+        # Убираем дубликат, если он есть, чтобы задача переместилась в начало
+        if custom_task_text in recent_tasks:
+            recent_tasks.remove(custom_task_text)
+        
+        # Добавляем новую задачу в начало списка
+        recent_tasks.insert(0, custom_task_text)
+        
+        # Оставляем только последние 3 задачи
+        context.user_data['recent_custom_tasks'] = recent_tasks[:3]
+        
         user_states.pop(user_id, None)
         await update.message.reply_text(
-            f"Принято! Задача: «{update.message.text}».\nТеперь выбери, через сколько напомнить:", 
+            f"Принято! Задача: «{custom_task_text}».\nТеперь выбери, через сколько напомнить:", 
             reply_markup=get_time_keyboard()
         )
 
@@ -218,25 +323,19 @@ def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
     # --- Регистрация обработчиков ---
-    
-    # ИСПРАВЛЕНО: Добавляем обработку команды /start и слов "старт/Старт"
     app.add_handler(CommandHandler("start", start))
-    # Флаг (?i) для игнорирования регистра должен стоять в самом начале выражения
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r'(?i)^старт$'), start))
 
-    # ИСПРАВЛЕНО: Добавляем обработку команды /remind, кнопки "Напомнить ⏰" и слов "напомни/Напомни"
     app.add_handler(CommandHandler("remind", remind_handler))
-    # Флаг (?i) также вынесен в начало
     remind_regex = r'(?i)^(Напомнить ⏰|напомни)$'
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(remind_regex), remind_handler))
     
-    # Обработчик кнопки "Удалить" остается без изменений
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex('^Удалить ❌$'), delete_list_handler))
 
     # Обработчик inline-кнопок
     app.add_handler(CallbackQueryHandler(button_handler))
     
-    # Обработчик текста для ввода кастомных данных должен идти ПОСЛЕ всех командных обработчиков
+    # Обработчик текста для ввода кастомных данных
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
     app.run_polling()
